@@ -266,67 +266,66 @@ class MOL2FileReader ( TextFileReader ):
         #   - atoms in each substructure are contiguous.
         #   - there are no overlapping or multiple substructures
         #     (this could perhaps be remedied by only processing residue substructures?)
-        if self.isParsed:
-            atomSubstructures = getattr ( self, "atomSubstructures", None )
-            substructures     = getattr ( self,     "substructures", None )
-            if ( atomStructures is None ) and ( substructures is None ):
-                pass
-            elif ( atomStructures is not None ) and ( substructures is not None ):
-                # . Initialization.
-                isOK           = True
-                majorSeparator = Sequence._attributable["labelSeparator"]
-                minorSeparator = Sequence._attributable["fieldSeparator"]
-                # . Generate path heads.
-                pathHeads = {}
-                ssFirst   = {}
-                ssIndices = []
-                ssLast    = {}
-                ssNames   = {}
-                for i in range ( self.numberOfSubstructures ):
-                    ( ssID, ssName, ssRoot, _, _, ssChain, ssSubtype, _ ) = self.substructures[i]
-                    if ( ssSubtype is not None ) and ssName.startswith ( ssSubtype ):
-                        head = ssSubtype
-                        tail = ssName[len(head):]
-                    else:
-                        first = len ( ssName )
-                        for c in range ( len ( ssName )-1, -1, -1 ):
-                            if ssName[c].isdigit ( ): first = c
-                            else:                     break
-                        head = ssName[:first]
-                        tail = ssName[first:]
-                    componentLabel = head
-                    if len ( tail ) > 0: componentLabel += ( minorSeparator + tail ) 
-                    if ssChain is None: entityLabel = ""
-                    else:               entityLabel = ssChain
-                    pathHeads[ssID] = "".join ( [ entityLabel, majorSeparator, componentLabel, majorSeparator ] )
-                    ssIndices.append ( ( ssRoot-1, ssID ) )
-                    ssNames  [ssID] = ssName
-                # . Get first and last indices of each ssID.
-                ssIndices.sort ( )
-                if ( ssIndices[0][0] == 0 ) and ( ssIndices[-1][0] < self.numberOfAtoms ):
-                    ssOld = None
-                    while len ( ssIndices ) > 0:
-                        ( ssRoot, ssID ) = ssIndices.pop ( 0 )
-                        if ssOld is not None: ssLast[ssOld] = ssRoot - 1
-                        ssFirst[ssID] = ssRoot
-                        ssOld         = ssID
-                    ssLast[ssOld] = self.numberOfAtoms - 1
+        atomSubstructures = getattr ( self, "atomSubstructures", None )
+        substructures     = getattr ( self,     "substructures", None )
+        if ( atomSubstructures is None ) and ( substructures is None ):
+            pass
+        elif ( atomSubstructures is not None ) and ( substructures is not None ):
+            # . Initialization.
+            isOK           = True
+            majorSeparator = Sequence._attributable["labelSeparator"]
+            minorSeparator = Sequence._attributable["fieldSeparator"]
+            # . Generate path heads.
+            pathHeads = {}
+            ssFirst   = {}
+            ssIndices = []
+            ssLast    = {}
+            ssNames   = {}
+            for i in range ( self.numberOfSubstructures ):
+                ( ssID, ssName, ssRoot, _, _, ssChain, ssSubtype, _ ) = self.substructures[i]
+                if ( ssSubtype is not None ) and ssName.startswith ( ssSubtype ):
+                    head = ssSubtype
+                    tail = ssName[len(head):]
                 else:
-                    self.Warning ( "Substructures do not cover the complete system.", False )
-                    isOK = False
-                # . Generate atom paths.
-                if isOK:
-                    self.atomPaths = []
-                    for i in range ( self.numberOfAtoms ):
-                        atomLabel        = self.atoms[i].label
-                        ( ssID, ssName ) = self.atomSubstructures[i]
-                        if ( ssName != ssNames[ssID] ) or ( i < ssFirst[ssID] ) or ( i > ssLast[ssID] ):
-                            self.Warning ( "Atom substructure name or index error.", False )
-                            isOK = False
-                            break
-                        self.atomPaths.append ( pathHeads[ssID] + atomLabel )
+                    first = len ( ssName )
+                    for c in range ( len ( ssName )-1, -1, -1 ):
+                        if ssName[c].isdigit ( ): first = c
+                        else:                     break
+                    head = ssName[:first]
+                    tail = ssName[first:]
+                componentLabel = head
+                if len ( tail ) > 0: componentLabel += ( minorSeparator + tail ) 
+                if ssChain is None: entityLabel = ""
+                else:               entityLabel = ssChain
+                pathHeads[ssID] = "".join ( [ entityLabel, majorSeparator, componentLabel, majorSeparator ] )
+                ssIndices.append ( ( ssRoot-1, ssID ) )
+                ssNames  [ssID] = ssName
+            # . Get first and last indices of each ssID.
+            ssIndices.sort ( )
+            if ( ssIndices[0][0] == 0 ) and ( ssIndices[-1][0] < self.numberOfAtoms ):
+                ssOld = None
+                while len ( ssIndices ) > 0:
+                    ( ssRoot, ssID ) = ssIndices.pop ( 0 )
+                    if ssOld is not None: ssLast[ssOld] = ssRoot - 1
+                    ssFirst[ssID] = ssRoot
+                    ssOld         = ssID
+                ssLast[ssOld] = self.numberOfAtoms - 1
             else:
-                self.Warning ( "No sequence can be generated as atom and substructure data missing.", False )
+                self.Warning ( "Substructures do not cover the complete system.", False )
+                isOK = False
+            # . Generate atom paths.
+            if isOK:
+                self.atomPaths = []
+                for i in range ( self.numberOfAtoms ):
+                    atomLabel        = self.atoms[i].label
+                    ( ssID, ssName ) = self.atomSubstructures[i]
+                    if ( ssName != ssNames[ssID] ) or ( i < ssFirst[ssID] ) or ( i > ssLast[ssID] ):
+                        self.Warning ( "Atom substructure name or index error.", False )
+                        isOK = False
+                        break
+                    self.atomPaths.append ( pathHeads[ssID] + atomLabel )
+        else:
+            self.Warning ( "No sequence can be generated as substructure data missing.", False )
 
     def ToAtomNames ( self ):
         """Return atom names."""
@@ -352,7 +351,7 @@ class MOL2FileReader ( TextFileReader ):
         system = None
         if self.isParsed:
             try:
-                if hasattr ( self, "atomPaths" ): sequence = Sequence.FromAtomPaths ( atomPaths, atoms = self.atoms )
+                if hasattr ( self, "atomPaths" ): sequence = Sequence.FromAtomPaths ( self.atomPaths, atoms = self.atoms )
                 else:                             sequence = Sequence.FromAtoms ( self.atoms )
                 system = System.FromSequence ( sequence, bonds = ( self.bonds if hasattr ( self, "bonds" ) else None ) )
                 system.label        = self.label
