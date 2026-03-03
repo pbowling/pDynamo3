@@ -51,6 +51,7 @@ from .MOLFileWriter             import MOLFileWriter
 from .MopacInputFileReader      import MopacInputFileReader                    
 from .ORCAHessianFileReader     import ORCAHessianFileReader                   
 from .ORCAOutputFileReader      import ORCAOutputFileReader                    
+from .QChemOutputFileReader     import QChemOutputFileReader                   
 from .PDBComponent              import PDBComponent                         , \
                                        PDBComponentAtom                     , \
                                        PDBComponentBond                     , \

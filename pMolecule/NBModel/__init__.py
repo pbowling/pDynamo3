@@ -13,6 +13,7 @@ from .NBModelDFTB                                    import NBModelDFTB
 from .NBModelFull                                    import NBModelFull
 from .NBModelMonteCarlo                              import NBModelMonteCarlo
 from .NBModelORCA                                    import NBModelORCA
+from .NBModelQChem                                   import NBModelQChem
 
 from .PairwiseInteraction                            import PairwiseInteraction
 from .PairwiseInteractionABFS                        import PairwiseInteractionABFS
@@ -32,6 +33,7 @@ from .QCMMElectrostaticModelMultipoleBase            import QCMMElectrostaticMod
 from .QCMMElectrostaticModelMultipoleCutOff          import QCMMElectrostaticModelMultipoleCutOff
 from .QCMMElectrostaticModelMultipoleFull            import QCMMElectrostaticModelMultipoleFull
 from .QCMMElectrostaticModelORCA                     import QCMMElectrostaticModelORCA
+from .QCMMElectrostaticModelQChem                    import QCMMElectrostaticModelQChem
 from .QCQCElectrostaticModelMultipoleCutOff          import QCQCElectrostaticModelMultipoleCutOff
 
 from .QCMMLennardJonesModel                          import QCMMLennardJonesModel

@@ -45,5 +45,8 @@ from .QCModelMNDOCI              import CIDiagonalization                       
                                         QCModelMNDOCI
 from .QCModelORCA                import _ORCACommand                                      , \
                                         QCModelORCA
+from .QCModelHF                  import QCModelHF
+from .QCModelQChem               import _QChemCommand                                    , \
+                                        QCModelQChem
 from .QCOnePDM                   import QCOnePDM
 from .QCOrbitals                 import QCOrbitals
