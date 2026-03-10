@@ -15,12 +15,12 @@ class NBModelQChem ( NBModelFull ):
     """Defines a full NB model compatible with the QChem program."""
 
     # . Defaults.
-    defaultLabel = "QChem"
+    _classLabel  = "QChem NB Model"
 
-    def QCMMModels ( self ):
+    def QCMMModels ( self, qcModel = None, withSymmetry = False ):
         """Default companion QC/MM models for the model."""
-        return { "qcmmElectrostatics" : QCMMElectrostaticModelQChem ,
-                 "qcmmLennard-Jones"  : QCMMLennardJonesModelFull  }
+        return { "qcmmElectrostatic" : QCMMElectrostaticModelQChem ,
+                 "qcmmLennardJones"  : QCMMLennardJonesModelFull  }
 
 #===================================================================================================================================
 # . Testing.

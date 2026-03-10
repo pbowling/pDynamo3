@@ -2,10 +2,10 @@
 
 from   pScientific.Arrays             import Array       , \
                                              StorageType
-from   pScientific.LinearAlgebra      import MatrixPower
 from  .GaussianBases                  import GaussianBasisContainer         , \
                                              GaussianBasisIntegralEvaluator
-from  .QCModelBase                    import QCModelBase
+from  .QCModelBase                    import QCModelBase                    , \
+                                             QCModelBaseState
 from  .QCModelError                   import QCModelError
 from ..EnergyModel                    import EnergyClosurePriority
 
@@ -21,32 +21,30 @@ _DefaultMaximumMemory = 2.0 # GB.
 class QCModelHF ( QCModelBase ):
     """An HF QC model."""
 
-    # . Defaults.
-    defaultKeys  = dict ( QCModelBase.defaultKeys )
-    defaultKeys.update ( { "Integral Evaluator" : ( "integralEvaluator", GaussianBasisIntegralEvaluator , None ) ,
-                           "Maximum Memory"     : ( "maximumMemory"    , _DefaultMaximumMemory          , None ) ,
-                           "Orbital Basis"      : ( "orbitalBasis"     , "631gs"                        , None ) } )
-    defaultLabel = "HF"
+    _attributable = dict ( QCModelBase._attributable )
+    _classLabel   = "HF QC Model"
+    _stateObject  = QCModelBaseState
+    _summarizable = dict ( QCModelBase._summarizable )
+    _attributable.update ( { "maximumMemory" : _DefaultMaximumMemory ,
+                             "orbitalBasis"  : "631gs"               } )
+    _summarizable.update ( { "maximumMemory" : ( "Maximum Memory (GB)", "{:.3f}" ) ,
+                             "orbitalBasis"  :   "Orbital Basis"                   } )
 
-    # . Charge model for properties defaults to "Mulliken".
-    # . Eventually will add better option handling (e.g.using Enum) when there are more than two possible models.
-    # . Is Lowdin correct? Often weird for bond orders or when have large basis sets.
-    # . LowdinT is identified as Yc as the density is Xc * Po * Xc^T where Po is the desired orthogonal density.
-    # . This will work no matter how Xc is calculated, as Yc is S * Xc.
-    # . An alternative definition is V * Ss^(1/2) which should give the same results when symmetric orthogonalization
-    # . is used only.
-    def AtomicDensityBondOrders ( self, density, bOs, chargeModel = "Mulliken" ):
+    # . Charge model note: Lowdin is identified as Yc (density is Xc * Po * Xc^T).
+    # . This works regardless of how Xc is calculated as Yc = S * Xc.
+    def AtomicDensityBondOrders ( self, target, density, bOs, chargeModel = "Mulliken" ):
         """Bond orders from a density."""
+        state = getattr ( target, self.__class__._stateName )
         if density is not None:
             if chargeModel == "Lowdin":
-                indices = self.orbitalBases.oIndices
-                lowdinT = self._target.scratch.inverseOrthogonalizer
+                indices = state.orbitalBases.oIndices
+                lowdinT = target.scratch.inverseOrthogonalizer
                 ps      = Array.WithExtent ( lowdinT.shape[1], storageType = StorageType.Symmetric )
                 density.Transform ( lowdinT, ps )
             else:
-                indices = self.orbitalBasisIndices
+                indices = state.orbitalBases.centerFunctionPointers
                 ps      = Array.WithShape ( density.shape )
-                overlap = self._target.scratch.overlapMatrix
+                overlap = target.scratch.overlapMatrix
                 density.MatrixMultiply ( overlap, ps )
             for i in range ( bOs.shape[0] ):
                 uStart = indices[i  ]
@@ -59,18 +57,19 @@ class QCModelHF ( QCModelBase ):
                         for v in range ( vStart, vStop ): q += ( ps[u,v] * ps[v,u] )
                     bOs[i,j] += q
 
-    def AtomicDensityCharges ( self, density, charges, chargeModel = "Mulliken" ):
+    def AtomicDensityCharges ( self, target, density, charges, chargeModel = "Mulliken" ):
         """Atomic charges from a density."""
+        state = getattr ( target, self.__class__._stateName )
         if density is not None:
             if chargeModel == "Lowdin":
-                indices = self.orbitalBases.oIndices
-                lowdinT = self._target.scratch.inverseOrthogonalizer
+                indices = state.orbitalBases.oIndices
+                lowdinT = target.scratch.inverseOrthogonalizer
                 ps      = Array.WithExtent ( lowdinT.shape[1] )
                 density.DiagonalOfTransform ( lowdinT, ps )
             else:
-                indices = self.orbitalBasisIndices
+                indices = state.orbitalBases.centerFunctionPointers
                 ps      = Array.WithExtent ( density.shape[0] )
-                overlap = self._target.scratch.overlapMatrix
+                overlap = target.scratch.overlapMatrix
                 density.DiagonalOfProduct ( overlap, ps )
             for ( i, start ) in enumerate ( indices[0:-1] ):
                 stop        = indices[i+1]
@@ -78,105 +77,54 @@ class QCModelHF ( QCModelBase ):
 
     def BuildModel ( self, target, qcSelection = None ):
         """Build the model."""
-        super ( QCModelHF, self ).BuildModel ( target, qcSelection = qcSelection )
-        self.CheckMemory ( )
+        state = super ( QCModelHF, self ).BuildModel ( target, qcSelection = qcSelection )
+        self.CheckMemory ( target )
+        return state
 
-    def CheckMemory ( self ):
+    def CheckMemory ( self, target ):
         """A simple memory check."""
-        # . Determine the space required by the TEIs in memory assuming no sparsity and 64-bit real (x1) and 16-bit integer (x4) values.
-        n = float ( self.orbitalBasisIndices[-1] )
+        # . Estimate space required by TEIs; no sparsity, 64-bit real + 4 x 16-bit integer = 16 bytes.
+        state = getattr ( target, self.__class__._stateName )
+        n = float ( len ( state.orbitalBases ) )
         p = ( n * ( n + 1.0 ) ) / 2.0
         q = ( p * ( p + 1.0 ) ) / 2.0
-        m = 16.0 * q / 1.0e+09 # . 16 bytes (1 Real64 + 4 Integer16) into GB.
+        m = 16.0 * q / 1.0e+09
         if m > self.maximumMemory:
             raise QCModelError ( "Estimated memory, {:.3f} GB, exceeds maximum memory, {:.3f} GB.".format ( m, self.maximumMemory ) )
 
-    def EnergyClosureGradients ( self ):
-        """Gradient energy closure."""
-        def a ( ): self.integralEvaluator.ElectronNuclearGradients ( self._target )
-        def b ( ): self.integralEvaluator.KineticOverlapGradients  ( self._target )
-        def c ( ): self.integralEvaluator.TwoElectronGradients     ( self._target )
-        def d ( ): self.GetWeightedDensity ( )
-        return [ ( EnergyClosurePriority.QCGradients   , a ) ,
-                 ( EnergyClosurePriority.QCGradients   , b ) ,
-                 ( EnergyClosurePriority.QCGradients   , c ) ,
-                 ( EnergyClosurePriority.QCPreGradients, d ) ]
+    def EnergyClosureGradients ( self, target ):
+        """Gradient energy closures."""
+        def a ( ): self.integralEvaluator.ElectronNuclearGradients ( target )
+        def b ( ): self.integralEvaluator.KineticOverlapGradients  ( target )
+        def c ( ): self.integralEvaluator.TwoElectronGradients     ( target )
+        def d ( ): self.GetWeightedDensity ( target )
+        return [ ( EnergyClosurePriority.QCGradients   , a, "QC Electron-Nuclear Gradients"    ) ,
+                 ( EnergyClosurePriority.QCGradients   , b, "QC Kinetic and Overlap Gradients" ) ,
+                 ( EnergyClosurePriority.QCGradients   , c, "QC Two-Electron Gradients"        ) ,
+                 ( EnergyClosurePriority.QCPreGradients, d, "QC Weighted Density"              ) ]
 
-    def EnergyClosureGradientsWithTimings ( self ):
-        """Gradient energy closure."""
-        def a ( ):
-            tStart = self._target.cpuTimer.Current ( )
-            self.integralEvaluator.ElectronNuclearGradients ( self._target )
-            self._target.timings["QC Electron-Nuclear Gradients"] += ( self._target.cpuTimer.Current ( ) - tStart )
-        def b ( ):
-            tStart = self._target.cpuTimer.Current ( )
-            self.integralEvaluator.KineticOverlapGradients ( self._target )
-            self._target.timings["QC Kinetic and Overlap Gradients"] += ( self._target.cpuTimer.Current ( ) - tStart )
-        def c ( ):
-            tStart = self._target.cpuTimer.Current ( )
-            self.integralEvaluator.TwoElectronGradients ( self._target )
-            self._target.timings["QC Two-Electron Gradients"] += ( self._target.cpuTimer.Current ( ) - tStart )
-        def d ( ):
-            tStart = self._target.cpuTimer.Current ( )
-            self.GetWeightedDensity ( )
-            self._target.timings["QC Weighted Density"] += ( self._target.cpuTimer.Current ( ) - tStart )
-        return [ ( EnergyClosurePriority.QCGradients   , a ) ,
-                 ( EnergyClosurePriority.QCGradients   , b ) ,
-                 ( EnergyClosurePriority.QCGradients   , c ) ,
-                 ( EnergyClosurePriority.QCPreGradients, d ) ]
-
-    def EnergyClosures ( self ):
+    def EnergyClosures ( self, target ):
         """Return energy closures."""
-        def a ( ): self.integralEvaluator.CoreCoreEnergy           ( self._target ) # . With derivatives if necessary.
-        def b ( ): self.integralEvaluator.ElectronNuclearIntegrals ( self._target )
-        def c ( ): self.integralEvaluator.KineticOverlapIntegrals  ( self._target )
-        def d ( ): self.integralEvaluator.TwoElectronIntegrals     ( self._target )
-        def e ( ): self.GetOrthogonalizer ( )
-        closures = super ( QCModelHF, self ).EnergyClosures ( )
-        closures.extend ( [ ( EnergyClosurePriority.QCIntegrals, a ) ,
-                            ( EnergyClosurePriority.QCIntegrals, b ) ,
-                            ( EnergyClosurePriority.QCIntegrals, c ) ,
-                            ( EnergyClosurePriority.QCIntegrals, d ) ,
-                            ( EnergyClosurePriority.QCPreEnergy, e ) ] )
-        closures.extend ( self.EnergyClosureGradients ( ) )
+        def a ( ): self.integralEvaluator.CoreCoreEnergy           ( target )
+        def b ( ): self.integralEvaluator.ElectronNuclearIntegrals ( target )
+        def c ( ): self.integralEvaluator.KineticOverlapIntegrals  ( target )
+        def d ( ): self.integralEvaluator.TwoElectronIntegrals     ( target )
+        def e ( ): self.GetOrthogonalizer ( target )
+        closures = super ( QCModelHF, self ).EnergyClosures ( target )
+        closures.extend ( [ ( EnergyClosurePriority.QCIntegrals    , a, "QC Nuclear"                       ) ,
+                            ( EnergyClosurePriority.QCIntegrals    , b, "QC Electron-Nuclear Integrals"    ) ,
+                            ( EnergyClosurePriority.QCIntegrals    , c, "QC Kinetic and Overlap Integrals" ) ,
+                            ( EnergyClosurePriority.QCIntegrals    , d, "QC Two-Electron Integrals"        ) ,
+                            ( EnergyClosurePriority.QCOrthogonalizer, e, "QC Orthogonalizer"              ) ] )
+        closures.extend ( self.EnergyClosureGradients ( target ) )
         return closures
 
-    def EnergyClosuresWithTimings ( self ):
-        """Return energy closures with timings."""
-        def a ( ):
-            tStart = self._target.cpuTimer.Current ( )
-            self.integralEvaluator.CoreCoreEnergy ( self._target )
-            self._target.timings["QC Nuclear"] += ( self._target.cpuTimer.Current ( ) - tStart )
-        def b ( ):
-            tStart = self._target.cpuTimer.Current ( )
-            self.integralEvaluator.ElectronNuclearIntegrals ( self._target )
-            self._target.timings["QC Electron-Nuclear Integrals"] += ( self._target.cpuTimer.Current ( ) - tStart )
-        def c ( ):
-            tStart = self._target.cpuTimer.Current ( )
-            self.integralEvaluator.KineticOverlapIntegrals ( self._target )
-            self._target.timings["QC Kinetic and Overlap Integrals"] += ( self._target.cpuTimer.Current ( ) - tStart )
-        def d ( ):
-            tStart = self._target.cpuTimer.Current ( )
-            self.integralEvaluator.TwoElectronIntegrals ( self._target )
-            self._target.timings["QC Two-Electron Integrals"] += ( self._target.cpuTimer.Current ( ) - tStart )
-        def e ( ):
-            tStart = self._target.cpuTimer.Current ( )
-            self.GetOrthogonalizer ( )
-            self._target.timings["QC Orthogonalizer"] += ( self._target.cpuTimer.Current ( ) - tStart )
-        closures = super ( QCModelHF, self ).EnergyClosuresWithTimings ( )
-        closures.extend ( [ ( EnergyClosurePriority.QCIntegrals, a ) ,
-                            ( EnergyClosurePriority.QCIntegrals, b ) ,
-                            ( EnergyClosurePriority.QCIntegrals, c ) ,
-                            ( EnergyClosurePriority.QCIntegrals, d ) ,
-                            ( EnergyClosurePriority.QCPreEnergy, e ) ] )
-        closures.extend ( self.EnergyClosureGradientsWithTimings ( ) )
-        return closures
-
-    def EnergyInitialize ( self ):
+    def EnergyInitialize ( self, target ):
         """Energy initialization."""
-        super ( QCModelHF, self ).EnergyInitialize ( )
-        n       = self.orbitalBasisIndices[-1]
-        scratch = self._target.scratch
+        super ( QCModelHF, self ).EnergyInitialize ( target )
+        state   = getattr ( target, self.__class__._stateName )
+        n       = len ( state.orbitalBases )
+        scratch = target.scratch
         overlap = scratch.Get ( "overlapMatrix", None )
         if ( overlap is None ) or ( overlap.rows != n ):
             overlap = Array.WithExtent ( n, storageType = StorageType.Symmetric )
@@ -189,28 +137,20 @@ class QCModelHF ( QCModelBase ):
                 scratch.weightedDensity = wDM
             wDM.Set ( 0.0 )
 
-    def GetParameters ( self ):
+    def GetParameters ( self, target ):
         """Get the parameters for the model."""
-        if self.label is None: self.label = "HF/{:s}".format ( self.orbitalBasis.upper ( ) )
-        self.orbitalBases   = GaussianBasisContainer.FromParameterDirectory ( self.orbitalBasis, self.atomicNumbers )
-        self.nuclearCharges = self.orbitalBases.nuclearCharges
+        state                = getattr ( target, self.__class__._stateName )
+        state.orbitalBases   = GaussianBasisContainer.FromParameterDirectory ( self.orbitalBasis, state.atomicNumbers )
+        state.nuclearCharges = state.orbitalBases.nuclearCharges
 
-    def GetWeightedDensity ( self ): 
+    def GetWeightedDensity ( self, target ):
         """Get the weighted density."""
-        scratch = self._target.scratch
+        scratch = target.scratch
         if scratch.doGradients:
             wDM = scratch.weightedDensity
             for label in ( "orbitalsP", "orbitalsQ" ):
                 orbitals = scratch.Get ( label, None )
                 if orbitals is not None: orbitals.MakeWeightedDensity ( wDM )
-
-    def SummaryEntries ( self ):
-        """Summary entries."""
-        entries = super ( QCModelHF, self ).SummaryEntries ( )
-        if self._target is not None:
-            entries.extend ( [ ( "Maximum Memory (GB)", "{:.3f}".format ( self.maximumMemory ) ) ,
-                               ( "Orbital Basis"      ,                   self.orbitalBasis    ) ] )
-        return entries
 
 #===================================================================================================================================
 # . Testing.
