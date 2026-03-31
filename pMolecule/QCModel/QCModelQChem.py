@@ -177,7 +177,7 @@ class QCModelQChem ( QCModel ):
         """Execute the job."""
         try:
             outFile = open ( state.paths["Output"], "w" )
-            subprocess.check_call ( [ self.command, "-nt", str ( self.numThreads ),
+            subprocess.check_call ( [ self.command, "-np", str ( self.numThreads ),
                                       state.paths["Input"], state.paths["Output"], "save" ],
                                     stderr = outFile, stdout = outFile )
             outFile.close ( )
@@ -229,6 +229,10 @@ class QCModelQChem ( QCModel ):
 
             # . cclib reads the QChem output file into a structured object.
             data = cclib.io.ccread ( filename )
+
+            # . Guard against incomplete Q-Chem output (e.g. OOM-killed before any SCF).
+            if data is None or not hasattr ( data, "scfenergies" ) or len ( data.scfenergies ) == 0:
+                raise AttributeError ( "Q-Chem output contains no SCF energies - job likely failed before SCF." )
 
             # . Assume converged if cclib does not raise an exception.
             scratch = { "Is Converged" : True }
@@ -321,8 +325,6 @@ class QCModelQChem ( QCModel ):
         qcScratch = os.getenv ( "QCSCRATCH" )
         with open ( state.paths["Input"], "w" ) as inFile:
 
-            inFile.write ( "#\n# QChem Job\n#\n\n" )
-
             # . $rem section.
             inFile.write ( "$rem\n" )
             if doGradients: inFile.write ( " JOBTYPE              FORCE" )
@@ -386,13 +388,14 @@ class QCModelQChem ( QCModel ):
             if doQCMM:
                 inFile.write ( "$qm_atoms\n 1:{:d}\n$end\n\n".format ( len ( state.atomicNumbers ) ) )
 
-                inFile.write ( "$force_field_params\n NumAtomTypes 999\n" )
                 pc_file     = np.loadtxt ( state.paths["PC"], skiprows = 1, usecols = [ 1, 2, 3, 4 ] )
                 pc_elements = np.loadtxt ( state.paths["PC"], skiprows = 1, usecols = [0], dtype = str )
                 pc_charges  = pc_file[:,0]
                 pc_coords   = pc_file[:,1:]
                 unique_charges        = np.unique ( pc_charges )
-                atom_types            = np.arange ( -101, -102 - len ( unique_charges ), step = -1 )
+                n_types               = 1 + len ( unique_charges )  # 1 zero-charge QM type + one per unique MM charge
+                inFile.write ( "$force_field_params\n NumAtomTypes {:d}\n".format ( n_types ) )
+                atom_types            = np.arange ( -1, -2 - len ( unique_charges ), step = -1 )
                 atom_type_charges     = np.array ( [0.0] + list ( unique_charges ) )
                 charges_to_atom_types = { atom_type_charges[i]: atom_types[i] for i in range ( 1, len ( atom_types ) ) }
                 label_col  = np.full_like ( atom_types, " AtomType", dtype = np.object_ )
@@ -404,9 +407,18 @@ class QCModelQChem ( QCModel ):
             # . $molecule section (coordinates in Angstroms).
             qcCoordinates3 = target.scratch.qcCoordinates3
             inFile.write ( "$molecule\n" )
-            inFile.write ( "{:d} {:d}\n".format ( target.electronicState.charge,
-                                                  target.electronicState.multiplicity ) )
-            atom_type = -101
+            if doQCMM:
+                # . Q-Chem validates the charge/multiplicity parity against ALL atoms in $molecule
+                # . (QM + MM background). Use the full system charge = QM charge + MM background charge
+                # . so that the electron count parity matches the specified multiplicity.
+                mm_background_charge = int ( round ( float ( np.sum ( pc_charges ) ) ) )
+                full_system_charge   = target.electronicState.charge + mm_background_charge
+                inFile.write ( "{:d} {:d}\n".format ( full_system_charge,
+                                                      target.electronicState.multiplicity ) )
+            else:
+                inFile.write ( "{:d} {:d}\n".format ( target.electronicState.charge,
+                                                      target.electronicState.multiplicity ) )
+            atom_type = -1  # type -1 is the zero-charge QM placeholder in $force_field_params
             for ( i, n ) in enumerate ( state.atomicNumbers ):
                 inFile.write ( "{:<4s}".format ( PeriodicTable.Symbol ( n ) ) )
                 for j in range ( 3 ):

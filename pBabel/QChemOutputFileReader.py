@@ -48,9 +48,9 @@ class Data:
 class QChemOutputFileReader ( TextFileReader ):
     """QChemOutputFileReader is the class for QChem output files that are to be read."""
 
-    defaultAttributes = { "context" : None ,
-                          "frames"  : None }
-    defaultAttributes.update ( TextFileReader.defaultAttributes )
+    _attributable = dict ( TextFileReader._attributable )
+    _attributable.update ( { "context" : None ,
+                              "frames"  : None } )
 
     def Parse ( self, log = logFile ):
         """Parse the data on the file."""
