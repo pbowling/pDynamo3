@@ -220,6 +220,24 @@ class QCModelQChem ( QCModel ):
             lowdin_charges[index] = atomic_numbers[atom] - population
         scratch["Loewdin Charges"] = lowdin_charges
 
+    @staticmethod
+    def _ParseTotalEnergyFromFile ( filename ):
+        """Fallback parser: return the first 'SCF energy' or 'Total energy' value (hartrees).
+
+        Q-Chem 7 QM/MM (ZEOLITE) appends a second coordinate-only section at the end
+        of the log file.  cclib reads that last section and finds no scfenergies even
+        though the SCF converged earlier.  This method scans forward to the first
+        occurrence of the canonical energy line and is therefore version-agnostic.
+        """
+        import re
+        _re_energy = re.compile ( r"^\s+(?:SCF|Total)\s+energy\s*=\s*([-\d.]+)" )
+        with open ( filename ) as fh:
+            for line in fh:
+                m = _re_energy.match ( line )
+                if m:
+                    return float ( m.group ( 1 ) )
+        return None
+
     def ReadOutputFile ( self, target, qchemOutputData ):
         """Read a QChem output file. Returns True if successful, False on error."""
         state = getattr ( target, self.__class__._stateName )
@@ -230,22 +248,37 @@ class QCModelQChem ( QCModel ):
             # . cclib reads the QChem output file into a structured object.
             data = cclib.io.ccread ( filename )
 
-            # . Guard against incomplete Q-Chem output (e.g. OOM-killed before any SCF).
-            if data is None or not hasattr ( data, "scfenergies" ) or len ( data.scfenergies ) == 0:
-                raise AttributeError ( "Q-Chem output contains no SCF energies - job likely failed before SCF." )
+            # . Guard against completely empty/unreadable output.
+            if data is None:
+                raise AttributeError ( "cclib could not read Q-Chem output — file may be empty or truncated." )
+
+            # . Q-Chem 7 QM/MM (ZEOLITE) appends a second coordinate-only section at the
+            # . end of the log, causing cclib to miss scfenergies.  Check scfvalues as an
+            # . independent convergence indicator before falling back to direct parsing.
+            has_scf_energies = hasattr ( data, "scfenergies" ) and len ( data.scfenergies ) > 0
+            if not has_scf_energies:
+                scf_converged = ( hasattr ( data, "scfvalues" ) and len ( data.scfvalues ) > 0 )
+                if not scf_converged:
+                    raise AttributeError ( "Q-Chem output contains no SCF energies and no SCF convergence data — job likely failed before SCF." )
 
             # . Assume converged if cclib does not raise an exception.
             scratch = { "Is Converged" : True }
 
             # . Energy: account for nuclear repulsion (ENUC) in QM/MM calculations.
             if target.scratch.doGradients:
-                scratch["Energy"] = ( data.scfenergies[-1] / Units.Energy_Hartrees_To_Electron_Volts )
+                if has_scf_energies:
+                    scf_e_hartree = data.scfenergies[-1] / Units.Energy_Hartrees_To_Electron_Volts
+                else:
+                    scf_e_hartree = self._ParseTotalEnergyFromFile ( filename )
+                    if scf_e_hartree is None:
+                        raise AttributeError ( "Could not parse SCF energy from Q-Chem output." )
+                scratch["Energy"] = scf_e_hartree
                 with open ( filename ) as fn:
                     for line in fn:
                         if "Etot" in line:
                             lsplit = line.split ( )
                             ENUC   = 2 * float ( lsplit[-2] )
-                            scratch["Energy"] = ( ( data.scfenergies[-1] / Units.Energy_Hartrees_To_Electron_Volts ) - ENUC )
+                            scratch["Energy"] = scf_e_hartree - ENUC
                             break
             elif self.cdftChargeConsCI1:
                 with open ( filename ) as fn:
@@ -257,7 +290,14 @@ class QCModelQChem ( QCModel ):
                             scratch["Energy"] = E_Tot - ENUC
                             break
             else:
-                scratch["Energy"] = ( data.scfenergies[-1] / Units.Energy_Hartrees_To_Electron_Volts )
+                if has_scf_energies:
+                    scratch["Energy"] = data.scfenergies[-1] / Units.Energy_Hartrees_To_Electron_Volts
+                else:
+                    # . Fallback for Q-Chem 7 QM/MM: parse 'SCF energy' / 'Total energy' directly.
+                    e_hartree = self._ParseTotalEnergyFromFile ( filename )
+                    if e_hartree is None:
+                        raise AttributeError ( "Could not parse SCF energy from Q-Chem output." )
+                    scratch["Energy"] = e_hartree
 
             # . CDFT-CI: extract per-state energies and electronic coupling.
             if self.cdftChargeConsCI1:
