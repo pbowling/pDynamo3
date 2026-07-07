@@ -15,15 +15,24 @@ from pathlib import Path
 class QCMMElectrostaticModelQChem ( QCMMElectrostaticModel ):
 
     # . Defaults.
-    _classLabel  = "QChem QC/MM Electrostatic Model"
+    _classLabel   = "QChem QC/MM Electrostatic Model"
+    _attributable = dict ( QCMMElectrostaticModel._attributable )
+    _attributable.update ( { "mmCutoff"  : 0.0 ,   # . Angstrom; 0 = include all MM atoms.
+                              "mmMinDist" : 0.5 } )  # . Angstrom; minimum QM-MM distance (removes unphysical close contacts near link atoms); 0 = disabled.
+    _summarizable = dict ( getattr ( QCMMElectrostaticModel, "_summarizable", {} ) )
+    _summarizable.update ( { "mmCutoff"  : ( "MM Cutoff (Ang)",   "{:.1f}" ) ,
+                              "mmMinDist" : ( "MM Min Dist (Ang)", "{:.1f}" ) } )
 
     def QCMMGradients ( self, target ):
         """Read MM data from QChem output file in atomic units and convert to pDynamo units."""
         if target.scratch.doGradients:
             gradients3B    = target.scratch.Get ( "bpGradients3", None )
             gradients3M    = target.scratch.gradients3
-            mmAtoms        = target.mmState.pureMMAtoms
-            nM             = len ( mmAtoms )
+            # . Use the filtered MM atom list if a cutoff was applied, otherwise all pure MM atoms.
+            mmAtomList     = getattr ( self, "_activeMM", None )
+            if mmAtomList is None:
+                mmAtomList = list ( target.mmState.pureMMAtoms )
+            nM             = len ( mmAtomList )
             qchem_log_path = target.qcState.paths["Output"]
             with open ( qchem_log_path ) as qchem_log_file:
                 for num, line in enumerate ( qchem_log_file ):
@@ -35,7 +44,7 @@ class QCMMElectrostaticModelQChem ( QCMMElectrostaticModel ):
             pc_gradients *= Units.Energy_Hartrees_To_Kilojoules_Per_Mole
             for i, row in enumerate ( pc_gradients ):
                 if i < nM:
-                    s = mmAtoms[i]
+                    s = mmAtomList[i]   # . actual system atom index (filtered or original)
                     for j in range ( 3 ):
                         gradients3M[s,j] += row[j]
                 else:
@@ -53,8 +62,29 @@ class QCMMElectrostaticModelQChem ( QCMMElectrostaticModel ):
             chargesM      = target.mmState.charges
             coordinates3B = target.scratch.Get ( "bpCoordinates3", None                )
             coordinates3M = target.scratch.Get ( "coordinates3NB", target.coordinates3 )
-            mmAtoms       = target.mmState.pureMMAtoms
+            allMM         = list ( target.mmState.pureMMAtoms )
             qScale        = 1.0 / self.dielectric
+            # . Apply spatial filters using ALL QC+link atom positions from qcCoordinates3QCMM.
+            # . mmCutoff: max distance filter (keep MM atoms within mmCutoff of any QC/link atom).
+            # . mmMinDist: min distance filter (remove MM atoms < mmMinDist from any QC/link atom;
+            # .   default 0.5 Ang guards against unphysical close contacts near link atoms
+            # .   that crash Q-Chem ZEOLITE interface).
+            if self.mmCutoff > 0.0 or self.mmMinDist > 0.0:
+                # . qcCoordinates3QCMM contains pure QC + link atom positions (Angstroms).
+                qcCrd3QCMM = target.scratch.qcCoordinates3QCMM
+                nQCAll     = len ( target.qcState.atomicNumbers )           # . pureQC + link atoms
+                qcCoords   = np.array ( [ [ qcCrd3QCMM[i,j] for j in range ( 3 ) ]
+                                           for i in range ( nQCAll ) ] )    # (nQCAll, 3) Ang
+                mmCoords   = np.array ( [ coordinates3M[i] for i in allMM ] )  # (nMM, 3) Ang
+                diffs      = mmCoords [ :, np.newaxis, : ] - qcCoords [ np.newaxis, :, : ]  # (nMM, nQCAll, 3)
+                minDists   = np.sqrt ( np.min ( np.sum ( diffs ** 2, axis = 2 ), axis = 1 ) )  # (nMM,)
+                mask       = np.ones ( len ( allMM ), dtype = bool )
+                if self.mmCutoff  > 0.0: mask &= ( minDists <= self.mmCutoff  )
+                if self.mmMinDist > 0.0: mask &= ( minDists >= self.mmMinDist )
+                mmAtoms    = [ allMM[i] for i in range ( len ( allMM ) ) if mask[i] ]
+            else:
+                mmAtoms    = allMM
+            self._activeMM = mmAtoms   # . saved for QCMMGradients
             nM            = len ( mmAtoms )
             if chargesB is None: nB = 0
             else:                nB = len ( chargesB )

@@ -327,8 +327,10 @@ class QCModelQChem ( QCModel ):
 
             # . $rem section.
             inFile.write ( "$rem\n" )
-            if doGradients: inFile.write ( " JOBTYPE              FORCE" )
-            else:           inFile.write ( " JOBTYPE              SP"    )
+            user_has_jobtype = any ( "JOBTYPE" in kw.upper ( ) for kw in self.keywords )
+            if not user_has_jobtype:
+                if doGradients: inFile.write ( " JOBTYPE              FORCE" )
+                else:           inFile.write ( " JOBTYPE              SP"    )
 
             # . Read MOs from saved checkpoint if available.
             if ( self.doGSM or self.doMinimization or self.doCDFT ) and qcScratch is not None:
@@ -392,16 +394,16 @@ class QCModelQChem ( QCModel ):
                 pc_elements = np.loadtxt ( state.paths["PC"], skiprows = 1, usecols = [0], dtype = str )
                 pc_charges  = pc_file[:,0]
                 pc_coords   = pc_file[:,1:]
+                # . Unique-charge grouping (matching kcs_pDynamo/Kevin's approach).
+                # . QM atoms use type -101 (charge 0); MM atoms share types by charge value.
+                # . NumAtomTypes 99999 matches Kevin's confirmed working qchemJob.inp value;
+                # . Q-Chem ignores this field and reads AtomType entries until $end.
                 unique_charges        = np.unique ( pc_charges )
-                n_types               = 1 + len ( unique_charges )  # 1 zero-charge QM type + one per unique MM charge
-                inFile.write ( "$force_field_params\n NumAtomTypes {:d}\n".format ( n_types ) )
-                atom_types            = np.arange ( -1, -2 - len ( unique_charges ), step = -1 )
-                atom_type_charges     = np.array ( [0.0] + list ( unique_charges ) )
-                charges_to_atom_types = { atom_type_charges[i]: atom_types[i] for i in range ( 1, len ( atom_types ) ) }
-                label_col  = np.full_like ( atom_types, " AtomType", dtype = np.object_ )
-                data_array = np.column_stack ( ( label_col, atom_types, atom_type_charges,
-                                                 np.ones_like ( atom_types ), np.zeros_like ( atom_types ) ) )
-                np.savetxt ( inFile, data_array, fmt = "%s" )
+                charges_to_atom_types = { charge: -(102 + i) for i, charge in enumerate ( unique_charges ) }
+                inFile.write ( "$force_field_params\n NumAtomTypes 99999\n" )
+                inFile.write ( " AtomType -101 0.0 1 0\n" )                # QM atoms
+                for i, charge in enumerate ( unique_charges ):
+                    inFile.write ( " AtomType {:d} {:.6f} 1 0\n".format ( -(102 + i), charge ) )
                 inFile.write ( "$end\n\n" )
 
             # . $molecule section (coordinates in Angstroms).
@@ -418,7 +420,7 @@ class QCModelQChem ( QCModel ):
             else:
                 inFile.write ( "{:d} {:d}\n".format ( target.electronicState.charge,
                                                       target.electronicState.multiplicity ) )
-            atom_type = -1  # type -1 is the zero-charge QM placeholder in $force_field_params
+            atom_type = -101  # QM atoms use type -101 (Kevin's convention; avoids -1 sentinel conflict)
             for ( i, n ) in enumerate ( state.atomicNumbers ):
                 inFile.write ( "{:<4s}".format ( PeriodicTable.Symbol ( n ) ) )
                 for j in range ( 3 ):
@@ -431,8 +433,7 @@ class QCModelQChem ( QCModel ):
                     inFile.write ( "{:<4s}".format ( pc_elements[i] ) )
                     for j in range ( 3 ):
                         inFile.write ( "{:20.10f}".format ( pc_coords[i,j] ) )
-                    atom_type = charges_to_atom_types[pc_charges[i]]
-                    inFile.write ( " {:d} 0 0 0 0\n".format ( atom_type ) )
+                    inFile.write ( " {:d} 0 0 0 0\n".format ( charges_to_atom_types[pc_charges[i]] ) )
             inFile.write ( "$end\n\n" )
 
     @property
